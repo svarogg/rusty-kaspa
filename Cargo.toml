@@ -9,4 +9,6 @@ members = [
     "misc",
     "crypto/hashes",
     "crypto/muhash",
+    "mining_manager",
+    "mining_manager/src/mempool",
 ]
