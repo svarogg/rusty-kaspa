@@ -7,3 +7,12 @@ pub struct Mempool {
     orphan_pool: OrphanPool,
     mempool_utxo_set: MempoolUTXOSet,
 }
+
+impl Mempool {
+    pub fn new() -> Self {
+        let transactions_pool = TransactionsPool::new();
+        let orphan_pool = OrphanPool::new();
+        let mempool_utxo_set = MempoolUTXOSet::new();
+        Self { transactions_pool, orphan_pool, mempool_utxo_set }
+    }
+}
