@@ -82,6 +82,7 @@ pub struct TransactionOutput {
 }
 
 /// Represents a Kaspa transaction
+#[derive(Clone)]
 pub struct Transaction {
     pub version: u16,
     pub inputs: Vec<Arc<TransactionInput>>,

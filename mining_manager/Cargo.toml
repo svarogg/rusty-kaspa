@@ -10,3 +10,4 @@ include = [
 
 [dependencies]
 consensus-core = { path = "../consensus/core" }
+sorted-vec = "0.8.0"

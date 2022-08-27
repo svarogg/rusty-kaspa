@@ -1,9 +1,10 @@
-use consensus_core::tx::{Transaction, TransactionOutpoint, UtxoEntry};
+use crate::mempool::MempoolTransaction;
+use consensus_core::tx::{TransactionOutpoint, UtxoEntry};
 use std::collections::HashMap;
 
 pub struct MempoolUTXOSet {
     pool_unspent_outputs: HashMap<TransactionOutpoint, UtxoEntry>,
-    transactions_by_previous_outpoint: HashMap<TransactionOutpoint, Transaction>,
+    transactions_by_previous_outpoint: HashMap<TransactionOutpoint, MempoolTransaction>,
 }
 
 impl MempoolUTXOSet {
