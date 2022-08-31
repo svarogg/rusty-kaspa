@@ -5,11 +5,13 @@ pub struct Params {
     pub genesis_hash: Hash,
     pub ghostdag_k: u8,
     pub timestamp_deviation_tolerance: u64,
-    pub target_time_per_block: u64,
+    pub target_time_per_block: u64, // in milliseconds
     pub max_block_parents: u8,
     pub difficulty_window_size: usize,
     pub genesis_timestamp: u64,
     pub genesis_bits: u32,
+    pub relay_non_std_transactions: bool, // TODO: consider moving to mempool config (What is ithis doing in dagparams?)
+    pub max_block_mass: u64,
 }
 
 pub const MAINNET_PARAMS: Params = Params {
@@ -21,4 +23,6 @@ pub const MAINNET_PARAMS: Params = Params {
     difficulty_window_size: 2641,
     genesis_timestamp: 0, // TODO: Use real value
     genesis_bits: 0,      // TODO: Use real value
+    relay_non_std_transactions: false,
+    max_block_mass: 500_000,
 };
