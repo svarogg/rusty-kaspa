@@ -1,9 +1,9 @@
+use crate::mempool::mempool_transaction::MempoolTransaction;
 use crate::mempool::transactions_ordered_by_fee::TransactionsOrderedByFee;
-use crate::mempool::MempoolTransaction;
 use consensus_core::tx::TransactionId;
 use std::collections::HashMap;
 
-pub struct TransactionsPool {
+pub(crate) struct TransactionsPool {
     all_transactions: HashMap<TransactionId, MempoolTransaction>,
     high_priority_transactions: HashMap<TransactionId, MempoolTransaction>,
     chained_transactions_by_parent_id: HashMap<TransactionId, Vec<MempoolTransaction>>,

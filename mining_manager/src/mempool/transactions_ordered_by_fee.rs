@@ -1,9 +1,9 @@
-use crate::mempool::MempoolTransaction;
+use crate::mempool::mempool_transaction::MempoolTransaction;
 use sorted_vec::SortedVec;
 use std::cmp::Ordering;
 use std::ops::Index;
 
-pub struct TransactionsOrderedByFee {
+pub(crate) struct TransactionsOrderedByFee {
     vec: SortedVec<TransactionOrderedByFee>,
 }
 
