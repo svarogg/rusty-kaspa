@@ -1,8 +1,10 @@
+use std::str::FromStr;
+
 /// The size of the array used to store subnetwork IDs.
 pub const SUBNETWORK_ID_SIZE: usize = 20;
 
 /// The domain representation of a Subnetwork ID
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct SubnetworkId([u8; SUBNETWORK_ID_SIZE]);
 
 impl AsRef<[u8]> for SubnetworkId {
@@ -30,6 +32,17 @@ impl SubnetworkId {
     #[inline]
     pub fn is_builtin_or_native(&self) -> bool {
         *self == SUBNETWORK_ID_NATIVE || self.is_builtin()
+    }
+}
+
+impl FromStr for SubnetworkId {
+    type Err = faster_hex::Error;
+
+    #[inline]
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        let mut bytes = [0u8; SUBNETWORK_ID_SIZE];
+        faster_hex::hex_decode(str.as_bytes(), &mut bytes)?;
+        Ok(SubnetworkId(bytes))
     }
 }
 

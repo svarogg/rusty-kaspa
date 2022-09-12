@@ -6,8 +6,9 @@ members = [
     "consensus",
     "kaspad",
     "wasm",
-    "misc",
     "crypto/hashes",
     "crypto/muhash",
+    "crypto/addresses",
+    "crypto/merkle",
     "mining_manager",
 ]

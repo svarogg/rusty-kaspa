@@ -1,7 +1,10 @@
+use crate::processes::ghostdag::ordering::SortableBlock;
+
 use super::{caching::CachedDbAccess, errors::StoreError, DB};
-use consensus_core::blockhash::BlockHashes;
+use consensus_core::{blockhash::BlockHashes, BlueWorkType};
 use hashes::Hash;
-use misc::uint256::Uint256;
+use itertools::EitherOrBoth::{Both, Left, Right};
+use itertools::Itertools;
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
@@ -12,7 +15,7 @@ pub type HashKTypeMap = Arc<HashMap<Hash, KType>>;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GhostdagData {
     pub blue_score: u64,
-    pub blue_work: Uint256,
+    pub blue_work: BlueWorkType,
     pub selected_parent: Hash,
     pub mergeset_blues: BlockHashes,
     pub mergeset_reds: BlockHashes,
@@ -21,7 +24,7 @@ pub struct GhostdagData {
 
 impl GhostdagData {
     pub fn new(
-        blue_score: u64, blue_work: Uint256, selected_parent: Hash, mergeset_blues: BlockHashes,
+        blue_score: u64, blue_work: BlueWorkType, selected_parent: Hash, mergeset_blues: BlockHashes,
         mergeset_reds: BlockHashes, blues_anticone_sizes: HashKTypeMap,
     ) -> Self {
         Self { blue_score, blue_work, selected_parent, mergeset_blues, mergeset_reds, blues_anticone_sizes }
@@ -41,6 +44,73 @@ impl GhostdagData {
             mergeset_reds: Default::default(),
             blues_anticone_sizes: HashKTypeMap::new(blues_anticone_sizes),
         }
+    }
+
+    pub fn mergeset_size(&self) -> usize {
+        self.mergeset_blues.len() + self.mergeset_reds.len()
+    }
+
+    /// Returns an iterator to the mergeset in ascending blue work order (tie-breaking by hash)
+    pub fn ascending_mergeset_without_selected_parent<'a>(
+        &'a self, store: &'a (impl GhostdagStoreReader + ?Sized),
+    ) -> impl Iterator<Item = SortableBlock> + '_ {
+        self.mergeset_blues
+            .iter()
+            .skip(1) // Skip the selected parent
+            .cloned()
+            .map(|h| SortableBlock::new(h, store.get_blue_work(h).unwrap()))
+            .merge_join_by(
+                self.mergeset_reds
+                    .iter()
+                    .cloned()
+                    .map(|h| SortableBlock::new(h, store.get_blue_work(h).unwrap())),
+                |a, b| a.cmp(b),
+            )
+            .map(|r| match r {
+                Left(b) | Right(b) => b,
+                Both(_, _) => panic!("distinct blocks are never equal"),
+            })
+    }
+
+    /// Returns an iterator to the mergeset in descending blue work order (tie-breaking by hash)
+    pub fn descending_mergeset_without_selected_parent<'a>(
+        &'a self, store: &'a (impl GhostdagStoreReader + ?Sized),
+    ) -> impl Iterator<Item = SortableBlock> + '_ {
+        self.mergeset_blues
+                .iter()
+                .skip(1) // Skip the selected parent
+                .rev()   // Reverse since blues and reds are stored with ascending blue work order
+                .cloned()
+                .map(|h| SortableBlock::new(h, store.get_blue_work(h).unwrap()))
+                .merge_join_by(
+                    self.mergeset_reds
+                        .iter()
+                        .rev() // Reverse
+                        .cloned()
+                        .map(|h| SortableBlock::new(h, store.get_blue_work(h).unwrap())),
+                    |a, b| b.cmp(a), // Reverse
+                )
+                .map(|r| match r {
+                    Left(b) | Right(b) => b,
+                    Both(_, _) => panic!("distinct blocks are never equal"),
+                })
+    }
+
+    /// Returns an iterator to the mergeset with no specified order (excluding the selected parent)
+    pub fn unordered_mergeset_without_selected_parent<'a>(&'a self) -> impl Iterator<Item = Hash> + '_ {
+        self.mergeset_blues
+            .iter()
+            .skip(1) // Skip the selected parent
+            .cloned()
+            .chain(self.mergeset_reds.iter().cloned())
+    }
+
+    /// Returns an iterator to the mergeset with no specified order (including the selected parent)
+    pub fn unordered_mergeset<'a>(&'a self) -> impl Iterator<Item = Hash> + '_ {
+        self.mergeset_blues
+            .iter()
+            .cloned()
+            .chain(self.mergeset_reds.iter().cloned())
     }
 }
 
@@ -74,18 +144,16 @@ impl GhostdagData {
         BlockHashes::make_mut(&mut data.mergeset_reds).push(block);
     }
 
-    pub fn finalize_score_and_work(self: &mut Arc<Self>, blue_score: u64, blue_work: Uint256) {
+    pub fn finalize_score_and_work(self: &mut Arc<Self>, blue_score: u64, blue_work: BlueWorkType) {
         let data = Arc::make_mut(self);
         data.blue_score = blue_score;
         data.blue_work = blue_work;
-
-        // TODO: should be accumulated through `add_blue`
     }
 }
 
 pub trait GhostdagStoreReader {
     fn get_blue_score(&self, hash: Hash) -> Result<u64, StoreError>;
-    fn get_blue_work(&self, hash: Hash) -> Result<Uint256, StoreError>;
+    fn get_blue_work(&self, hash: Hash) -> Result<BlueWorkType, StoreError>;
     fn get_selected_parent(&self, hash: Hash) -> Result<Hash, StoreError>;
     fn get_mergeset_blues(&self, hash: Hash) -> Result<BlockHashes, StoreError>;
     fn get_mergeset_reds(&self, hash: Hash) -> Result<BlockHashes, StoreError>;
@@ -128,12 +196,12 @@ impl DbGhostdagStore {
         }
     }
 
-    pub fn insert_batch(&self, batch: &mut WriteBatch, hash: Hash, data: Arc<GhostdagData>) -> Result<(), StoreError> {
+    pub fn insert_batch(&self, batch: &mut WriteBatch, hash: Hash, data: &Arc<GhostdagData>) -> Result<(), StoreError> {
         if self.cached_access.has(hash)? {
             return Err(StoreError::KeyAlreadyExists(hash.to_string()));
         }
         self.cached_access
-            .write_batch(batch, hash, &data)?;
+            .write_batch(batch, hash, data)?;
         Ok(())
     }
 }
@@ -143,7 +211,7 @@ impl GhostdagStoreReader for DbGhostdagStore {
         Ok(self.cached_access.read(hash)?.blue_score)
     }
 
-    fn get_blue_work(&self, hash: Hash) -> Result<Uint256, StoreError> {
+    fn get_blue_work(&self, hash: Hash) -> Result<BlueWorkType, StoreError> {
         Ok(self.cached_access.read(hash)?.blue_work)
     }
 
@@ -192,7 +260,7 @@ impl GhostdagStore for DbGhostdagStore {
 /// being non-mutable.
 pub struct MemoryGhostdagStore {
     blue_score_map: RefCell<HashMap<Hash, u64>>,
-    blue_work_map: RefCell<HashMap<Hash, Uint256>>,
+    blue_work_map: RefCell<HashMap<Hash, BlueWorkType>>,
     selected_parent_map: RefCell<HashMap<Hash, Hash>>,
     mergeset_blues_map: RefCell<HashMap<Hash, BlockHashes>>,
     mergeset_reds_map: RefCell<HashMap<Hash, BlockHashes>>,
@@ -253,7 +321,7 @@ impl GhostdagStoreReader for MemoryGhostdagStore {
         }
     }
 
-    fn get_blue_work(&self, hash: Hash) -> Result<Uint256, StoreError> {
+    fn get_blue_work(&self, hash: Hash) -> Result<BlueWorkType, StoreError> {
         match self.blue_work_map.borrow().get(&hash) {
             Some(blue_work) => Ok(*blue_work),
             None => Err(StoreError::KeyNotFound(hash.to_string())),
@@ -304,5 +372,76 @@ impl GhostdagStoreReader for MemoryGhostdagStore {
 
     fn has(&self, hash: Hash) -> Result<bool, StoreError> {
         Ok(self.blue_score_map.borrow().contains_key(&hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_mergeset_iterators() {
+        let store = MemoryGhostdagStore::new();
+
+        let factory = |w| {
+            Arc::new(GhostdagData {
+                blue_score: Default::default(),
+                blue_work: w,
+                selected_parent: Default::default(),
+                mergeset_blues: Default::default(),
+                mergeset_reds: Default::default(),
+                blues_anticone_sizes: Default::default(),
+            })
+        };
+
+        // Blues
+        store.insert(1.into(), factory(2)).unwrap();
+        store.insert(2.into(), factory(7)).unwrap();
+        store.insert(3.into(), factory(11)).unwrap();
+
+        // Reds
+        store.insert(4.into(), factory(4)).unwrap();
+        store.insert(5.into(), factory(9)).unwrap();
+        store.insert(6.into(), factory(11)).unwrap(); // Tie-breaking case
+
+        let mut data = Arc::new(GhostdagData::new_with_selected_parent(1.into(), 5));
+        data.add_blue(2.into(), Default::default(), &Default::default());
+        data.add_blue(3.into(), Default::default(), &Default::default());
+
+        data.add_red(4.into());
+        data.add_red(5.into());
+        data.add_red(6.into());
+
+        let mut expected: Vec<Hash> = vec![4.into(), 2.into(), 5.into(), 3.into(), 6.into()];
+        assert_eq!(
+            expected,
+            data.ascending_mergeset_without_selected_parent(&store)
+                .map(|b| b.hash)
+                .collect::<Vec<Hash>>()
+        );
+
+        expected.reverse();
+        assert_eq!(
+            expected,
+            data.descending_mergeset_without_selected_parent(&store)
+                .map(|b| b.hash)
+                .collect::<Vec<Hash>>()
+        );
+
+        // Use sets since the below functions have no order guarantee
+        let expected: HashSet<Hash> = HashSet::from([4.into(), 2.into(), 5.into(), 3.into(), 6.into()]);
+        assert_eq!(
+            expected,
+            data.unordered_mergeset_without_selected_parent()
+                .collect::<HashSet<Hash>>()
+        );
+
+        let expected: HashSet<Hash> = HashSet::from([1.into(), 4.into(), 2.into(), 5.into(), 3.into(), 6.into()]);
+        assert_eq!(
+            expected,
+            data.unordered_mergeset()
+                .collect::<HashSet<Hash>>()
+        );
     }
 }

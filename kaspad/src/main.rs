@@ -4,8 +4,7 @@ extern crate hashes;
 
 use std::sync::Arc;
 
-use consensus::consensus::Consensus;
-use consensus::model::stores::DB;
+use consensus::consensus::test_consensus::TestConsensus;
 use consensus::params::MAINNET_PARAMS;
 use consensus_core::blockhash;
 use hashes::Hash;
@@ -32,21 +31,16 @@ pub fn main() {
     println!("Using rayon thread pool with {} threads", rayon::current_num_threads());
 
     let core = Arc::new(Core::new());
-    let signals = Arc::new(signals::Signals::new(core.clone()));
-    signals.init();
 
     // ---
-
-    let db_tempdir = tempfile::tempdir().unwrap();
-    let db = Arc::new(DB::open_default(db_tempdir.path().to_owned().to_str().unwrap()).unwrap());
 
     let mut params = MAINNET_PARAMS;
     params.genesis_hash = genesis;
 
-    let consensus = Arc::new(Consensus::new(db, &params));
-    let monitor = Arc::new(ConsensusMonitor::new(consensus.clone()));
+    // Make sure to create the DB first, so it cleans up last
+    let consensus = Arc::new(TestConsensus::create_from_temp_db(&params));
+    let monitor = Arc::new(ConsensusMonitor::new(consensus.processing_counters().clone()));
     let emitter = Arc::new(emulator::RandomBlockEmitter::new(
-        "block-emitter",
         consensus.clone(),
         genesis,
         params.max_block_parents.into(),
@@ -55,12 +49,12 @@ pub fn main() {
         target_blocks,
     ));
 
-    // we are starting emitter first - channels will buffer
-    // until consumers start, however, when shutting down
-    // the shutdown will be done in the startup order, resulting
-    // in emitter going down first...
-    core.bind(emitter);
+    // Bind the keyboard signal to the emitter. The emitter will then shutdown core
+    Arc::new(signals::Signals::new(&emitter)).init();
+
+    // Consensus must start first in order to init genesis in stores
     core.bind(consensus);
+    core.bind(emitter);
     core.bind(monitor);
 
     core.run();

@@ -5,23 +5,35 @@ use crate::{
     model::{
         services::{reachability::MTReachabilityService, relations::MTRelationsService, statuses::MTStatusesService},
         stores::{
-            block_window_cache::BlockWindowCacheStore, daa::DbDaaStore, ghostdag::DbGhostdagStore,
-            headers::DbHeadersStore, pruning::DbPruningStore, reachability::DbReachabilityStore,
-            relations::DbRelationsStore, statuses::DbStatusesStore, DB,
+            block_window_cache::BlockWindowCacheStore,
+            daa::DbDaaStore,
+            depth::DbDepthStore,
+            ghostdag::DbGhostdagStore,
+            headers::DbHeadersStore,
+            pruning::DbPruningStore,
+            reachability::DbReachabilityStore,
+            relations::DbRelationsStore,
+            statuses::{BlockStatus, DbStatusesStore},
+            DB,
         },
     },
     params::Params,
     pipeline::{
-        header_processor::{BlockTask, HeaderProcessor},
+        block_processor::BlockBodyProcessor,
+        deps_manager::{BlockResultSender, BlockTask},
+        header_processor::HeaderProcessor,
+        virtual_processor::VirtualStateProcessor,
         ProcessingCounters,
     },
     processes::{
-        dagtraversalmanager::DagTraversalManager, difficulty::DifficultyManager, ghostdag::protocol::GhostdagManager,
-        pastmediantime::PastMedianTimeManager, reachability::inquirer as reachability,
+        block_at_depth::BlockDepthManager, dagtraversalmanager::DagTraversalManager, difficulty::DifficultyManager,
+        ghostdag::protocol::GhostdagManager, pastmediantime::PastMedianTimeManager,
+        reachability::inquirer as reachability,
     },
 };
 use consensus_core::block::Block;
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use futures::Future;
 use kaspa_core::{core::Core, service::Service};
 use parking_lot::RwLock;
 use std::{
@@ -40,14 +52,17 @@ pub struct Consensus {
 
     // Processors
     header_processor: Arc<HeaderProcessor>,
+    body_processor: Arc<BlockBodyProcessor>,
+    virtual_processor: Arc<VirtualStateProcessor>,
 
     // Stores
     statuses_store: Arc<RwLock<DbStatusesStore>>,
     relations_store: Arc<RwLock<DbRelationsStore>>,
     reachability_store: Arc<RwLock<DbReachabilityStore>>,
+    pruning_store: Arc<RwLock<DbPruningStore>>,
 
     // Append-only stores
-    ghostdag_store: Arc<DbGhostdagStore>,
+    pub(super) ghostdag_store: Arc<DbGhostdagStore>,
 
     // Services and managers
     statuses_service: Arc<MTStatusesService<DbStatusesStore>>,
@@ -59,6 +74,7 @@ pub struct Consensus {
         DbGhostdagStore,
         MTRelationsService<DbRelationsStore>,
         MTReachabilityService<DbReachabilityStore>,
+        DbHeadersStore,
     >,
     pub(super) past_median_time_manager: PastMedianTimeManager<DbHeadersStore, DbGhostdagStore, BlockWindowCacheStore>,
 
@@ -75,6 +91,7 @@ impl Consensus {
         let ghostdag_store = Arc::new(DbGhostdagStore::new(db.clone(), 100000));
         let daa_store = Arc::new(DbDaaStore::new(db.clone(), 100000));
         let headers_store = Arc::new(DbHeadersStore::new(db.clone(), 100000));
+        let depth_store = Arc::new(DbDepthStore::new(db.clone(), 100000));
         let block_window_cache_for_difficulty = Arc::new(BlockWindowCacheStore::new(2000));
         let block_window_cache_for_past_median_time = Arc::new(BlockWindowCacheStore::new(2000));
 
@@ -95,12 +112,31 @@ impl Consensus {
             params.timestamp_deviation_tolerance as usize,
             params.genesis_timestamp,
         );
+        let difficulty_manager = DifficultyManager::new(
+            headers_store.clone(),
+            params.genesis_bits,
+            params.difficulty_window_size,
+            params.target_time_per_block,
+        );
 
-        let (sender, receiver): (Sender<BlockTask>, Receiver<BlockTask>) = bounded(2000);
+        let depth_manager = BlockDepthManager::new(
+            params.merge_depth,
+            params.finality_depth,
+            params.genesis_hash,
+            depth_store.clone(),
+            reachability_service.clone(),
+            ghostdag_store.clone(),
+        );
+
+        let (sender, receiver): (Sender<BlockTask>, Receiver<BlockTask>) = unbounded();
+        let (body_sender, body_receiver): (Sender<BlockTask>, Receiver<BlockTask>) = unbounded();
+        let (virtual_sender, virtual_receiver): (Sender<BlockTask>, Receiver<BlockTask>) = unbounded();
+
         let counters = Arc::new(ProcessingCounters::default());
 
         let header_processor = Arc::new(HeaderProcessor::new(
             receiver,
+            body_sender,
             params,
             db.clone(),
             relations_store.clone(),
@@ -109,39 +145,57 @@ impl Consensus {
             headers_store.clone(),
             daa_store,
             statuses_store.clone(),
-            pruning_store,
+            pruning_store.clone(),
+            depth_store,
             block_window_cache_for_difficulty,
             block_window_cache_for_past_median_time,
             reachability_service.clone(),
             relations_service.clone(),
             past_median_time_manager.clone(),
             dag_traversal_manager.clone(),
+            difficulty_manager.clone(),
+            depth_manager,
             counters.clone(),
+        ));
+
+        let body_processor = Arc::new(BlockBodyProcessor::new(
+            body_receiver,
+            virtual_sender,
+            db.clone(),
+            statuses_store.clone(),
+            reachability_service.clone(),
+        ));
+
+        let virtual_processor = Arc::new(VirtualStateProcessor::new(
+            virtual_receiver,
+            db.clone(),
+            statuses_store.clone(),
+            reachability_service.clone(),
         ));
 
         Self {
             db,
             block_sender: sender,
             header_processor,
+            body_processor,
+            virtual_processor,
             statuses_store,
             relations_store,
             reachability_store,
             ghostdag_store: ghostdag_store.clone(),
+            pruning_store,
 
             statuses_service,
             relations_service: relations_service.clone(),
             reachability_service: reachability_service.clone(),
-            difficulty_manager: DifficultyManager::new(
-                headers_store,
-                params.genesis_bits,
-                params.difficulty_window_size,
-            ),
+            difficulty_manager,
             dag_traversal_manager,
             ghostdag_manager: GhostdagManager::new(
                 params.genesis_hash,
                 params.ghostdag_k,
                 ghostdag_store,
                 relations_service,
+                headers_store,
                 reachability_service,
             ),
             past_median_time_manager,
@@ -150,37 +204,45 @@ impl Consensus {
         }
     }
 
-    pub fn init(&self) -> JoinHandle<()> {
+    pub fn init(&self) -> Vec<JoinHandle<()>> {
         // Ensure that reachability store is initialized
         reachability::init(self.reachability_store.write().deref_mut()).unwrap();
 
         // Ensure that genesis was processed
         self.header_processor.process_genesis_if_needed();
 
-        // Spawn the asynchronous header processor.
+        // Spawn the asynchronous processors.
         let header_processor = self.header_processor.clone();
-        thread::spawn(move || header_processor.worker())
+        let body_processor = self.body_processor.clone();
+        let virtual_processor = self.virtual_processor.clone();
 
-        // TODO: add block body processor and virtual state processor workers and return a vec of join handles.
+        vec![
+            thread::spawn(move || header_processor.worker()),
+            thread::spawn(move || body_processor.worker()),
+            thread::spawn(move || virtual_processor.worker()),
+        ]
     }
 
-    pub async fn validate_and_insert_block(&self, block: Arc<Block>) -> BlockProcessResult<()> {
-        let (tx, rx): (oneshot::Sender<BlockProcessResult<()>>, _) = oneshot::channel();
+    pub fn validate_and_insert_block(
+        &self, block: Arc<Block>,
+    ) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
+        let (tx, rx): (BlockResultSender, _) = oneshot::channel();
         self.block_sender
-            .send(BlockTask::Process(block, tx))
+            .send(BlockTask::Process(block, vec![tx]))
             .unwrap();
-        rx.await.unwrap()
+        async { rx.await.unwrap() }
     }
 
     pub fn signal_exit(&self) {
         self.block_sender.send(BlockTask::Exit).unwrap();
     }
 
-    /// Drops consensus, and specifically drops sender channels so that
-    /// internal workers fold up and can be joined.
-    pub fn drop(self) -> (Arc<RwLock<DbReachabilityStore>>, Arc<DbGhostdagStore>) {
+    pub fn shutdown(&self, wait_handles: Vec<JoinHandle<()>>) {
         self.signal_exit();
-        (self.reachability_store, self.ghostdag_store)
+        // Wait for async consensus processors to exit
+        for handle in wait_handles {
+            handle.join().unwrap();
+        }
     }
 }
 
@@ -190,7 +252,7 @@ impl Service for Consensus {
     }
 
     fn start(self: Arc<Consensus>, core: Arc<Core>) -> Vec<JoinHandle<()>> {
-        vec![self.init()]
+        self.init()
     }
 
     fn stop(self: Arc<Consensus>) {

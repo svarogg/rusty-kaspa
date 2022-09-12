@@ -1,11 +1,16 @@
+use parking_lot::{RwLock, RwLockWriteGuard};
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::{caching::CachedDbAccessForCopy, errors::StoreResult, DB};
+use super::{
+    caching::CachedDbAccessForCopy,
+    errors::{StoreError, StoreResult},
+    DB,
+};
 use hashes::Hash;
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum BlockStatus {
     /// StatusInvalid indicates that the block is invalid.
@@ -50,10 +55,7 @@ pub struct DbStatusesStore {
 
 impl DbStatusesStore {
     pub fn new(db: Arc<DB>, cache_size: u64) -> Self {
-        Self {
-            raw_db: Arc::clone(&db),
-            cached_access: CachedDbAccessForCopy::new(Arc::clone(&db), cache_size, STORE_PREFIX),
-        }
+        Self { raw_db: Arc::clone(&db), cached_access: CachedDbAccessForCopy::new(db, cache_size, STORE_PREFIX) }
     }
 
     pub fn clone_with_new_cache(&self, cache_size: u64) -> Self {
@@ -62,10 +64,23 @@ impl DbStatusesStore {
             cached_access: CachedDbAccessForCopy::new(Arc::clone(&self.raw_db), cache_size, STORE_PREFIX),
         }
     }
+}
 
-    pub fn set_batch(&mut self, batch: &mut WriteBatch, hash: Hash, status: BlockStatus) -> StoreResult<()> {
-        self.cached_access
-            .write_batch(batch, hash, status)
+pub trait StatusesStoreBatchExtensions {
+    fn set_batch(
+        &self, batch: &mut WriteBatch, hash: Hash, status: BlockStatus,
+    ) -> Result<RwLockWriteGuard<DbStatusesStore>, StoreError>;
+}
+
+impl StatusesStoreBatchExtensions for Arc<RwLock<DbStatusesStore>> {
+    fn set_batch(
+        &self, batch: &mut WriteBatch, hash: Hash, status: BlockStatus,
+    ) -> Result<RwLockWriteGuard<DbStatusesStore>, StoreError> {
+        let write_guard = self.write();
+        write_guard
+            .cached_access
+            .write_batch(batch, hash, status)?;
+        Ok(write_guard)
     }
 }
 

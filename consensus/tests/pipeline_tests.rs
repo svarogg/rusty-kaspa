@@ -1,11 +1,14 @@
 use consensus::{
-    consensus::test_consensus::TestConsensus,
+    consensus::test_consensus::{create_temp_db, TestConsensus},
     errors::RuleError,
-    model::stores::reachability::{DbReachabilityStore, StagingReachabilityStore},
+    model::stores::{
+        reachability::{DbReachabilityStore, StagingReachabilityStore},
+        statuses::BlockStatus,
+    },
     params::MAINNET_PARAMS,
     processes::reachability::tests::{DagBlock, DagBuilder, StoreValidationExtensions},
 };
-use consensus_core::blockhash;
+use consensus_core::{blockhash, tx::Transaction};
 use futures::future::join_all;
 use hashes::Hash;
 use parking_lot::RwLock;
@@ -19,7 +22,7 @@ mod common;
 #[test]
 fn test_reachability_staging() {
     // Arrange
-    let (_tempdir, db) = common::create_temp_db();
+    let (_temp_db_lifetime, db) = create_temp_db();
     let store = RwLock::new(DbReachabilityStore::new(db.clone(), 10000));
     let mut staging = StagingReachabilityStore::new(store.upgradable_read());
 
@@ -82,13 +85,13 @@ fn test_reachability_staging() {
 
 #[tokio::test]
 async fn test_concurrent_pipeline() {
-    let (_tempdir, db) = common::create_temp_db();
+    let (_temp_db_lifetime, db) = create_temp_db();
 
     let mut params = MAINNET_PARAMS;
     params.genesis_hash = 1.into();
 
     let consensus = TestConsensus::new(db, &params);
-    let wait_handle = consensus.init();
+    let wait_handles = consensus.init();
 
     let blocks = vec![
         (2.into(), vec![1.into()]),
@@ -113,11 +116,11 @@ async fn test_concurrent_pipeline() {
         results.1.unwrap();
     }
 
-    let (store, _) = consensus.drop();
     // Clone with a new cache in order to verify correct writes to the DB itself
-    let store = store.read().clone_with_new_cache(10000);
-
-    wait_handle.join().unwrap();
+    let store = consensus
+        .reachability_store()
+        .read()
+        .clone_with_new_cache(10000);
 
     // Assert intervals
     store
@@ -148,6 +151,8 @@ async fn test_concurrent_pipeline() {
     assert!(store.are_anticone(11, 4));
     assert!(store.are_anticone(11, 6));
     assert!(store.are_anticone(11, 9));
+
+    consensus.shutdown(wait_handles);
 }
 
 #[tokio::test]
@@ -159,13 +164,13 @@ async fn test_concurrent_pipeline_random() {
     let poi = Poisson::new((bps * delay) as f64).unwrap();
     let mut thread_rng = rand::thread_rng();
 
-    let (_tempdir, db) = common::create_temp_db();
+    let (_temp_db_lifetime, db) = create_temp_db();
 
     let mut params = MAINNET_PARAMS;
     params.genesis_hash = genesis;
 
     let consensus = TestConsensus::new(db, &params);
-    let wait_handle = consensus.init();
+    let wait_handles = consensus.init();
 
     let mut tips = vec![genesis];
     let mut total = 1000i64;
@@ -181,7 +186,11 @@ async fn test_concurrent_pipeline_random() {
         for _ in 0..v {
             let hash = blockhash::new_unique();
             new_tips.push(hash);
-            let b = consensus.build_block_with_parents(hash, tips.clone());
+
+            // Use fake transaction to make the block propagate to body and virtual processors
+            let b =
+                consensus.build_block_with_parents_and_transactions(hash, tips.clone(), vec![Transaction::default()]);
+
             // Submit to consensus
             let f = consensus.validate_and_insert_block(Arc::new(b));
             futures.push(f);
@@ -189,19 +198,21 @@ async fn test_concurrent_pipeline_random() {
         join_all(futures)
             .await
             .into_iter()
-            .collect::<Result<Vec<()>, RuleError>>()
+            .collect::<Result<Vec<BlockStatus>, RuleError>>()
             .unwrap();
         tips = new_tips;
     }
 
-    let (store, _) = consensus.drop();
     // Clone with a new cache in order to verify correct writes to the DB itself
-    let store = store.read().clone_with_new_cache(10000);
-
-    wait_handle.join().unwrap();
+    let store = consensus
+        .reachability_store()
+        .read()
+        .clone_with_new_cache(10000);
 
     // Assert intervals
     store
         .validate_intervals(blockhash::ORIGIN)
         .unwrap();
+
+    consensus.shutdown(wait_handles);
 }

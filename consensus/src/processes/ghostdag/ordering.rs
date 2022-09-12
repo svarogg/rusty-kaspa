@@ -1,11 +1,11 @@
 use std::{cmp::Ordering, collections::HashSet};
 
+use consensus_core::BlueWorkType;
 use hashes::Hash;
-use misc::uint256::Uint256;
 
 use crate::model::{
     services::reachability::ReachabilityService,
-    stores::{ghostdag::GhostdagStoreReader, relations::RelationsStoreReader},
+    stores::{ghostdag::GhostdagStoreReader, headers::HeaderStoreReader, relations::RelationsStoreReader},
 };
 
 use super::protocol::GhostdagManager;
@@ -13,12 +13,18 @@ use super::protocol::GhostdagManager;
 #[derive(Eq, Clone)]
 pub struct SortableBlock {
     pub hash: Hash,
-    pub blue_work: Uint256,
+    pub blue_work: BlueWorkType,
+}
+
+impl SortableBlock {
+    pub fn new(hash: Hash, blue_work: BlueWorkType) -> Self {
+        Self { hash, blue_work }
+    }
 }
 
 impl PartialEq for SortableBlock {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash && self.blue_work == other.blue_work
+        self.hash == other.hash
     }
 }
 
@@ -38,7 +44,9 @@ impl Ord for SortableBlock {
     }
 }
 
-impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService> GhostdagManager<T, S, U> {
+impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService, V: HeaderStoreReader>
+    GhostdagManager<T, S, U, V>
+{
     pub fn sort_blocks(&self, blocks: HashSet<Hash>) -> Vec<Hash> {
         let mut sorted_blocks: Vec<Hash> = Vec::from_iter(blocks.iter().cloned());
         sorted_blocks.sort_by_cached_key(|block| SortableBlock {

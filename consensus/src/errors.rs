@@ -1,4 +1,5 @@
 use crate::constants;
+use consensus_core::BlueWorkType;
 use hashes::Hash;
 use thiserror::Error;
 
@@ -36,11 +37,29 @@ pub enum RuleError {
     #[error("expected header daa score {0} but got {1}")]
     UnexpectedHeaderDaaScore(u64, u64),
 
+    #[error("expected header blue score {0} but got {1}")]
+    UnexpectedHeaderBlueScore(u64, u64),
+
+    #[error("expected header blue work {0} but got {1}")]
+    UnexpectedHeaderBlueWork(BlueWorkType, BlueWorkType),
+
     #[error("block difficulty of {0} is not the expected value of {1}")]
     UnexpectedDifficulty(u32, u32),
 
     #[error("block timestamp of {0} is not after expected {1}")]
-    ErrTimeTooOld(u64, u64),
+    TimeTooOld(u64, u64),
+
+    #[error("block is known to be invalid")]
+    KnownInvalid,
+
+    #[error("block merges {0} blocks > {1} merge set size limit")]
+    MergeSetTooBig(u64, u64),
+
+    #[error("block is violating bounded merge depth")]
+    ViolatingBoundedMergeDepth,
+
+    #[error("invalid merkle root: header indicates {0} but calculated value is {1}")]
+    BadMerkleRoot(Hash, Hash),
 }
 
 pub type BlockProcessResult<T> = std::result::Result<T, RuleError>;
