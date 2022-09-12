@@ -25,11 +25,12 @@ pub struct Mempool {
 impl Mempool {
     pub fn new(consensus: Arc<Consensus>, params: &Params) -> Self {
         let config = MempoolConfig::default(params);
+
         let transactions_pool = TransactionsPool::new();
         let orphan_pool = OrphanPool::new();
         let mempool_utxo_set = MempoolUTXOSet::new();
 
-        Self { config, transactions_pool, orphan_pool, mempool_utxo_set, consensus }
+        Self { config, consensus, transactions_pool, orphan_pool, mempool_utxo_set }
     }
 }
 
