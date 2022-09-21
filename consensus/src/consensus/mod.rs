@@ -244,6 +244,11 @@ impl Consensus {
             handle.join().unwrap();
         }
     }
+
+    pub fn virtual_daa_score(&self) -> u64 {
+        // TODO: implement this
+        0
+    }
 }
 
 impl Service for Consensus {

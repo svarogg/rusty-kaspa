@@ -3,24 +3,24 @@ use sorted_vec::SortedVec;
 use std::cmp::Ordering;
 use std::ops::Index;
 
-pub(crate) struct TransactionsOrderedByFee {
-    vec: SortedVec<TransactionOrderedByFee>,
+pub(crate) struct TransactionsOrderedByFee<'a> {
+    vec: SortedVec<TransactionOrderedByFee<'a>>,
 }
 
-impl Index<usize> for TransactionsOrderedByFee {
-    type Output = MempoolTransaction;
+impl<'a> Index<usize> for TransactionsOrderedByFee<'a> {
+    type Output = &'a MempoolTransaction<'a>;
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.vec[index].transaction
     }
 }
 
-impl TransactionsOrderedByFee {
+impl<'a> TransactionsOrderedByFee<'a> {
     pub fn new() -> Self {
         Self { vec: SortedVec::new() }
     }
 
-    pub fn insert(&mut self, transaction: MempoolTransaction) -> usize {
+    pub fn insert(&mut self, transaction: &'a MempoolTransaction) -> usize {
         self.vec
             .insert(TransactionOrderedByFee::new(transaction))
     }
@@ -30,19 +30,19 @@ impl TransactionsOrderedByFee {
     }
 }
 
-struct TransactionOrderedByFee {
-    transaction: MempoolTransaction,
+struct TransactionOrderedByFee<'a> {
+    transaction: &'a MempoolTransaction<'a>,
 }
 
-impl TransactionOrderedByFee {
-    pub fn new(transaction: MempoolTransaction) -> Self {
+impl<'a> TransactionOrderedByFee<'a> {
+    pub fn new(transaction: &'a MempoolTransaction) -> Self {
         Self { transaction }
     }
 }
 
-impl Eq for TransactionOrderedByFee {}
+impl<'a> Eq for TransactionOrderedByFee<'a> {}
 
-impl PartialEq<Self> for TransactionOrderedByFee {
+impl<'a> PartialEq<Self> for TransactionOrderedByFee<'a> {
     fn eq(&self, other: &Self) -> bool {
         self.transaction
             .transaction
@@ -51,7 +51,7 @@ impl PartialEq<Self> for TransactionOrderedByFee {
     }
 }
 
-impl PartialOrd<Self> for TransactionOrderedByFee {
+impl<'a> PartialOrd<Self> for TransactionOrderedByFee<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.transaction
             .transaction
@@ -59,7 +59,7 @@ impl PartialOrd<Self> for TransactionOrderedByFee {
             .partial_cmp(&other.transaction.transaction.fee)
     }
 }
-impl Ord for TransactionOrderedByFee {
+impl<'a> Ord for TransactionOrderedByFee<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.transaction
             .transaction
@@ -70,25 +70,21 @@ impl Ord for TransactionOrderedByFee {
 
 #[cfg(test)]
 mod tests {
+    use crate::mempool::mempool_transaction::MempoolTransaction;
     use crate::mempool::transactions_ordered_by_fee::TransactionsOrderedByFee;
-    use crate::mempool::MempoolTransaction;
     use consensus_core::subnets::SUBNETWORK_ID_NATIVE;
     use consensus_core::tx::Transaction;
+    use std::collections::HashMap;
 
     #[test]
     fn test_transactions_ordered_by_fee() {
-        fn transaction_with_fee(fee: u64) -> MempoolTransaction {
-            MempoolTransaction::new(Transaction::new(
+        fn transaction_with_fee(fee: u64) -> MempoolTransaction<'static> {
+            MempoolTransaction::new(
+                Transaction::new(0, Vec::new(), Vec::new(), 0, SUBNETWORK_ID_NATIVE, 0, Vec::new(), fee, 0),
+                &HashMap::new(),
+                false,
                 0,
-                Vec::new(),
-                Vec::new(),
-                0,
-                SUBNETWORK_ID_NATIVE,
-                0,
-                Vec::new(),
-                fee,
-                0,
-            ))
+            )
         }
 
         let biggest = transaction_with_fee(100);
@@ -97,13 +93,13 @@ mod tests {
 
         let mut transactions = TransactionsOrderedByFee::new();
 
-        transactions.insert(middle.clone());
-        transactions.insert(smallest.clone());
-        transactions.insert(biggest.clone());
+        transactions.insert(&middle);
+        transactions.insert(&smallest);
+        transactions.insert(&biggest);
 
         assert_eq!(3, transactions.len());
-        assert_eq!(smallest.transaction.fee, transactions[0].transaction.fee);
-        assert_eq!(middle.transaction.fee, transactions[1].transaction.fee);
-        assert_eq!(biggest.transaction.fee, transactions[2].transaction.fee);
+        assert_eq!(smallest, transactions[0]);
+        assert_eq!(middle, transactions[1]);
+        assert_eq!(biggest, transactions[2]);
     }
 }

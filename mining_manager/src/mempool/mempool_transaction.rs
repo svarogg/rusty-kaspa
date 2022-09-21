@@ -2,18 +2,18 @@ use consensus_core::tx::{Transaction, TransactionId};
 use std::collections::HashMap;
 
 #[derive(Clone)]
-pub(crate) struct MempoolTransaction {
-    pub(crate) transaction: Transaction,
-    pub(crate) parent_transactions_in_pool: HashMap<TransactionId, MempoolTransaction>,
-    pub(crate) is_high_prioriry: bool,
+pub(crate) struct MempoolTransaction<'a> {
+    pub(crate) transaction: &'a Transaction,
+    pub(crate) parent_transactions_in_pool: &'a HashMap<TransactionId, MempoolTransaction<'a>>,
+    pub(crate) is_high_priority: bool,
     pub(crate) added_at_daa_score: u64,
 }
 
-impl MempoolTransaction {
+impl<'a> MempoolTransaction<'a> {
     pub fn new(
-        transaction: Transaction, parent_transactions_in_pool: HashMap<TransactionId, MempoolTransaction>,
-        is_high_prioriry: bool, added_at_daa_score: u64,
+        transaction: &'a Transaction, parent_transactions_in_pool: &'a HashMap<TransactionId, MempoolTransaction<'a>>,
+        is_high_priority: bool, added_at_daa_score: u64,
     ) -> Self {
-        Self { transaction, parent_transactions_in_pool, is_high_prioriry, added_at_daa_score }
+        Self { transaction, parent_transactions_in_pool, is_high_priority, added_at_daa_score }
     }
 }
