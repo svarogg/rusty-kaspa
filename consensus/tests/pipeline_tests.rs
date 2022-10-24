@@ -8,13 +8,13 @@ use consensus::{
     params::MAINNET_PARAMS,
     processes::reachability::tests::{DagBlock, DagBuilder, StoreValidationExtensions},
 };
-use consensus_core::{blockhash, tx::Transaction};
-use futures::future::join_all;
+use consensus_core::blockhash;
+use futures_util::future::join_all;
 use hashes::Hash;
 use parking_lot::RwLock;
 use rand_distr::{Distribution, Poisson};
 use rocksdb::WriteBatch;
-use std::{cmp::min, sync::Arc};
+use std::cmp::min;
 use tokio::join;
 
 mod common;
@@ -53,9 +53,7 @@ fn test_reachability_staging() {
     let store = store.read().clone_with_new_cache(10000);
 
     // Assert intervals
-    store
-        .validate_intervals(blockhash::ORIGIN)
-        .unwrap();
+    store.validate_intervals(blockhash::ORIGIN).unwrap();
 
     // Assert genesis
     for i in 2u64..=12 {
@@ -87,7 +85,7 @@ fn test_reachability_staging() {
 async fn test_concurrent_pipeline() {
     let (_temp_db_lifetime, db) = create_temp_db();
 
-    let mut params = MAINNET_PARAMS;
+    let mut params = MAINNET_PARAMS.clone_with_skip_pow();
     params.genesis_hash = 1.into();
 
     let consensus = TestConsensus::new(db, &params);
@@ -109,23 +107,17 @@ async fn test_concurrent_pipeline() {
 
     for (hash, parents) in blocks {
         // Submit to consensus twice to make sure duplicates are handled
-        let b = Arc::new(consensus.build_block_with_parents(hash, parents));
-        let results =
-            join!(consensus.validate_and_insert_block(Arc::clone(&b)), consensus.validate_and_insert_block(b));
+        let b = consensus.build_block_with_parents(hash, parents).to_immutable();
+        let results = join!(consensus.validate_and_insert_block(b.clone()), consensus.validate_and_insert_block(b));
         results.0.unwrap();
         results.1.unwrap();
     }
 
     // Clone with a new cache in order to verify correct writes to the DB itself
-    let store = consensus
-        .reachability_store()
-        .read()
-        .clone_with_new_cache(10000);
+    let store = consensus.reachability_store().read().clone_with_new_cache(10000);
 
     // Assert intervals
-    store
-        .validate_intervals(blockhash::ORIGIN)
-        .unwrap();
+    store.validate_intervals(blockhash::ORIGIN).unwrap();
 
     // Assert genesis
     for i in 2u64..=12 {
@@ -166,7 +158,7 @@ async fn test_concurrent_pipeline_random() {
 
     let (_temp_db_lifetime, db) = create_temp_db();
 
-    let mut params = MAINNET_PARAMS;
+    let mut params = MAINNET_PARAMS.clone_with_skip_pow();
     params.genesis_hash = genesis;
 
     let consensus = TestConsensus::new(db, &params);
@@ -187,32 +179,21 @@ async fn test_concurrent_pipeline_random() {
             let hash = blockhash::new_unique();
             new_tips.push(hash);
 
-            // Use fake transaction to make the block propagate to body and virtual processors
-            let b =
-                consensus.build_block_with_parents_and_transactions(hash, tips.clone(), vec![Transaction::default()]);
+            let b = consensus.build_block_with_parents_and_transactions(hash, tips.clone(), vec![]).to_immutable();
 
             // Submit to consensus
-            let f = consensus.validate_and_insert_block(Arc::new(b));
+            let f = consensus.validate_and_insert_block(b);
             futures.push(f);
         }
-        join_all(futures)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<BlockStatus>, RuleError>>()
-            .unwrap();
+        join_all(futures).await.into_iter().collect::<Result<Vec<BlockStatus>, RuleError>>().unwrap();
         tips = new_tips;
     }
 
     // Clone with a new cache in order to verify correct writes to the DB itself
-    let store = consensus
-        .reachability_store()
-        .read()
-        .clone_with_new_cache(10000);
+    let store = consensus.reachability_store().read().clone_with_new_cache(10000);
 
     // Assert intervals
-    store
-        .validate_intervals(blockhash::ORIGIN)
-        .unwrap();
+    store.validate_intervals(blockhash::ORIGIN).unwrap();
 
     consensus.shutdown(wait_handles);
 }

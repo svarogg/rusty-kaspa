@@ -9,9 +9,9 @@ use crate::{
     },
     processes::reachability::interval::Interval,
 };
-use consensus_core::blockhash::BlockHashExtensions;
+use consensus_core::{blockhash::BlockHashExtensions, BlockHashMap, BlockHashSet};
 use hashes::Hash;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use thiserror::Error;
 
 /// A struct with fluent API to streamline reachability store building
@@ -26,9 +26,7 @@ impl<'a, T: ReachabilityStore + ?Sized> StoreBuilder<'a, T> {
 
     pub fn add_block(&mut self, hash: Hash, parent: Hash) -> &mut Self {
         let parent_height = if !parent.is_none() { self.store.append_child(parent, hash).unwrap() } else { 0 };
-        self.store
-            .insert(hash, parent, Interval::empty(), parent_height + 1)
-            .unwrap();
+        self.store.insert(hash, parent, Interval::empty(), parent_height + 1).unwrap();
         self
     }
 }
@@ -89,12 +87,12 @@ impl DagBlock {
 /// A struct with fluent API to streamline DAG building
 pub struct DagBuilder<'a, T: ReachabilityStore + ?Sized> {
     store: &'a mut T,
-    map: HashMap<Hash, DagBlock>,
+    map: BlockHashMap<DagBlock>,
 }
 
 impl<'a, T: ReachabilityStore + ?Sized> DagBuilder<'a, T> {
     pub fn new(store: &'a mut T) -> Self {
-        Self { store, map: HashMap::new() }
+        Self { store, map: BlockHashMap::new() }
     }
 
     pub fn init(&mut self) -> &mut Self {
@@ -104,12 +102,7 @@ impl<'a, T: ReachabilityStore + ?Sized> DagBuilder<'a, T> {
 
     pub fn add_block(&mut self, block: DagBlock) -> &mut Self {
         // Select by height (longest chain) just for the sake of internal isolated tests
-        let selected_parent = block
-            .parents
-            .iter()
-            .cloned()
-            .max_by_key(|p| self.store.get_height(*p).unwrap())
-            .unwrap();
+        let selected_parent = block.parents.iter().cloned().max_by_key(|p| self.store.get_height(*p).unwrap()).unwrap();
         let mergeset = self.mergeset(&block, selected_parent);
         add_block(self.store, block.hash, selected_parent, &mut mergeset.iter().cloned()).unwrap();
         hint_virtual_selected_parent(self.store, block.hash).unwrap();
@@ -118,14 +111,9 @@ impl<'a, T: ReachabilityStore + ?Sized> DagBuilder<'a, T> {
     }
 
     fn mergeset(&self, block: &DagBlock, selected_parent: Hash) -> Vec<Hash> {
-        let mut queue: VecDeque<Hash> = block
-            .parents
-            .iter()
-            .cloned()
-            .filter(|p| *p != selected_parent)
-            .collect();
-        let mut mergeset = HashSet::<Hash>::from_iter(queue.iter().cloned());
-        let mut past: HashSet<Hash> = HashSet::new();
+        let mut queue: VecDeque<Hash> = block.parents.iter().copied().filter(|p| *p != selected_parent).collect();
+        let mut mergeset: BlockHashSet = queue.iter().copied().collect();
+        let mut past = BlockHashSet::new();
 
         while let Some(current) = queue.pop_front() {
             for parent in self.map[&current].parents.iter() {
@@ -142,8 +130,7 @@ impl<'a, T: ReachabilityStore + ?Sized> DagBuilder<'a, T> {
                 queue.push_back(*parent);
             }
         }
-
-        Vec::<Hash>::from_iter(mergeset.iter().cloned())
+        mergeset.into_iter().collect()
     }
 
     pub fn store(&self) -> &&'a mut T {
@@ -211,12 +198,7 @@ impl<T: ReachabilityStoreReader + ?Sized> StoreValidationExtensions for T {
             for child in children.iter().cloned() {
                 let child_interval = self.get_interval(child)?;
                 if !parent_interval.strictly_contains(child_interval) {
-                    return Err(TestError::IntervalOutOfParentBounds {
-                        parent,
-                        child,
-                        parent_interval,
-                        child_interval,
-                    });
+                    return Err(TestError::IntervalOutOfParentBounds { parent, child, parent_interval, child_interval });
                 }
             }
 

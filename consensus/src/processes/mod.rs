@@ -1,6 +1,11 @@
 pub mod block_at_depth;
+pub mod coinbase;
 pub mod dagtraversalmanager;
 pub mod difficulty;
 pub mod ghostdag;
+pub mod mass;
+pub mod parents_builder;
 pub mod pastmediantime;
+pub mod pruning;
 pub mod reachability;
+pub mod transaction_validator;

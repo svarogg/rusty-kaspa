@@ -1,24 +1,21 @@
 use crate::{errors::BlockProcessResult, model::stores::statuses::BlockStatus};
-use consensus_core::block::Block;
+use consensus_core::{block::Block, BlockHashMap};
 use hashes::Hash;
 use parking_lot::{Condvar, Mutex};
-use std::{
-    collections::{hash_map::Entry::Vacant, HashMap},
-    sync::Arc,
-};
+use std::collections::hash_map::Entry::Vacant;
 use tokio::sync::oneshot;
 
 pub type BlockResultSender = oneshot::Sender<BlockProcessResult<BlockStatus>>;
 
 pub enum BlockTask {
     Exit,
-    Process(Arc<Block>, Vec<BlockResultSender>),
+    Process(Block, Vec<BlockResultSender>),
 }
 
 /// An internal struct used to manage a block processing task
 struct BlockTaskInternal {
     // The actual block
-    block: Arc<Block>,
+    block: Block,
 
     // A list of channel senders for transmitting the processing result of this task to the async callers
     result_transmitters: Vec<BlockResultSender>,
@@ -28,7 +25,7 @@ struct BlockTaskInternal {
 }
 
 impl BlockTaskInternal {
-    fn new(block: Arc<Block>, result_transmitters: Vec<BlockResultSender>) -> Self {
+    fn new(block: Block, result_transmitters: Vec<BlockResultSender>) -> Self {
         Self { block, result_transmitters, dependent_tasks: Vec::new() }
     }
 }
@@ -36,7 +33,7 @@ impl BlockTaskInternal {
 /// A concurrent data structure for managing block processing tasks and their DAG dependencies
 pub(crate) struct BlockTaskDependencyManager {
     /// Holds pending block hashes and their corresponding tasks
-    pending: Mutex<HashMap<Hash, BlockTaskInternal>>,
+    pending: Mutex<BlockHashMap<BlockTaskInternal>>,
 
     // Used to signal that workers are idle
     idle_signal: Condvar,
@@ -44,7 +41,7 @@ pub(crate) struct BlockTaskDependencyManager {
 
 impl BlockTaskDependencyManager {
     pub fn new() -> Self {
-        Self { pending: Mutex::new(HashMap::new()), idle_signal: Condvar::new() }
+        Self { pending: Mutex::new(BlockHashMap::new()), idle_signal: Condvar::new() }
     }
 
     /// Registers the `(block, result_transmitters)` pair as a pending task. If the block is already pending
@@ -52,7 +49,7 @@ impl BlockTaskDependencyManager {
     /// result transmitters and the function returns `false` indicating that the task shall
     /// not be queued for processing. The function is expected to be called by a worker
     /// controlling the reception of block processing tasks.
-    pub fn register(&self, block: Arc<Block>, mut result_transmitters: Vec<BlockResultSender>) -> bool {
+    pub fn register(&self, block: Block, mut result_transmitters: Vec<BlockResultSender>) -> bool {
         let mut pending = self.pending.lock();
         match pending.entry(block.header.hash) {
             Vacant(e) => {
@@ -61,10 +58,9 @@ impl BlockTaskDependencyManager {
             }
             e => {
                 e.and_modify(|v| {
-                    v.result_transmitters
-                        .append(&mut result_transmitters);
-                    // The block now includes transactions, so we update the internal block data
+                    v.result_transmitters.append(&mut result_transmitters);
                     if v.block.is_header_only() && !block.is_header_only() {
+                        // The block now includes transactions, so we update the internal block data
                         v.block = block;
                     }
                 });
@@ -77,7 +73,7 @@ impl BlockTaskDependencyManager {
     /// previously registered through `self.register`. If any of the direct parents `parent` of
     /// this hash are in `pending` state, the task is queued as a dependency to the `parent` task
     /// and wil be re-evaluated once that task completes -- in which case the function will return `None`.
-    pub fn try_begin(&self, hash: Hash) -> Option<Arc<Block>> {
+    pub fn try_begin(&self, hash: Hash) -> Option<Block> {
         // Lock the pending map. The contention around the lock is
         // expected to be negligible in header processing time
         let mut pending = self.pending.lock();
@@ -91,19 +87,17 @@ impl BlockTaskDependencyManager {
         Some(block)
     }
 
-    /// Report the completion of a processing task. Signals progress to the managing thread.
-    /// The function passes the block and the final list of `result_transmitters` to the
-    /// provided `callback` function (note that callback is called under the internal lock),
+    /// Report the completion of a processing task. Signals idleness if pending task list is emptied.
+    /// The function passes the `block` and the final list of `result_transmitters` to the
+    /// provided `callback` function (note that `callback` is called under the internal lock),
     /// and returns a list of `dependent_tasks` which should be requeued to workers.
     pub fn end<F>(&self, hash: Hash, callback: F) -> Vec<Hash>
     where
-        F: Fn(Arc<Block>, Vec<BlockResultSender>),
+        F: Fn(Block, Vec<BlockResultSender>),
     {
         // Re-lock for post-processing steps
         let mut pending = self.pending.lock();
-        let task = pending
-            .remove(&hash)
-            .expect("processed block is expected to be in pending map");
+        let task = pending.remove(&hash).expect("processed block is expected to be in pending map");
 
         // Callback within the lock
         callback(task.block, task.result_transmitters);
@@ -112,7 +106,6 @@ impl BlockTaskDependencyManager {
             self.idle_signal.notify_one();
         }
 
-        // We return the block as well, in case it was updated to a non-header only block
         task.dependent_tasks
     }
 

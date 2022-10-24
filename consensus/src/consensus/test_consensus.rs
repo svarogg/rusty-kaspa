@@ -4,29 +4,43 @@ use std::{
     thread::JoinHandle,
 };
 
-use consensus_core::{block::Block, header::Header, merkle::calc_hash_merkle_root, tx::Transaction};
-use futures::Future;
+use consensus_core::{
+    block::{Block, MutableBlock},
+    header::Header,
+    merkle::calc_hash_merkle_root,
+    subnets::SUBNETWORK_ID_COINBASE,
+    tx::Transaction,
+    BlockHashSet,
+};
 use hashes::Hash;
 use kaspa_core::{core::Core, service::Service};
 use parking_lot::RwLock;
+use std::future::Future;
 
 use crate::{
+    constants::TX_VERSION,
     errors::BlockProcessResult,
     model::stores::{
-        block_window_cache::BlockWindowCacheStore, ghostdag::DbGhostdagStore, pruning::PruningStoreReader,
-        reachability::DbReachabilityStore, statuses::BlockStatus, DB,
+        block_window_cache::BlockWindowCacheStore,
+        ghostdag::DbGhostdagStore,
+        headers::{DbHeadersStore, HeaderStoreReader},
+        pruning::PruningStoreReader,
+        reachability::DbReachabilityStore,
+        statuses::{BlockStatus, StatusesStoreReader},
+        tips::TipsStoreReader,
+        DB,
     },
     params::Params,
-    pipeline::{header_processor::HeaderProcessingContext, ProcessingCounters},
-    processes::dagtraversalmanager::DagTraversalManager,
+    pipeline::{body_processor::BlockBodyProcessor, ProcessingCounters},
+    processes::{dagtraversalmanager::DagTraversalManager, pastmediantime::PastMedianTimeManager},
     test_helpers::header_from_precomputed_hash,
 };
 
-use super::Consensus;
+use super::{Consensus, DbGhostdagManager};
 
 pub struct TestConsensus {
     consensus: Consensus,
-    params: Params,
+    pub params: Params,
     temp_db_lifetime: TempDbLifetime,
 }
 
@@ -42,75 +56,53 @@ impl TestConsensus {
 
     pub fn build_header_with_parents(&self, hash: Hash, parents: Vec<Hash>) -> Header {
         let mut header = header_from_precomputed_hash(hash, parents);
-        let mut ctx: HeaderProcessingContext = HeaderProcessingContext::new(
-            hash,
-            &header,
-            self.consensus
-                .pruning_store
-                .read()
-                .pruning_point()
-                .unwrap(),
-        );
-        self.consensus
-            .ghostdag_manager
-            .add_block(&mut ctx, hash);
-
-        let ghostdag_data = ctx.ghostdag_data.unwrap();
-
-        let window = self
+        let ghostdag_data = self.consensus.ghostdag_manager.ghostdag(header.direct_parents());
+        header.pruning_point = self
             .consensus
-            .dag_traversal_manager
-            .block_window(ghostdag_data.clone(), self.params.difficulty_window_size);
-
-        let mut window_hashes = window.iter().map(|item| item.0.hash);
-
+            .pruning_manager
+            .expected_header_pruning_point(ghostdag_data.to_compact(), self.consensus.pruning_store.read().get().unwrap());
+        let window = self.consensus.dag_traversal_manager.block_window(ghostdag_data.clone(), self.params.difficulty_window_size);
         let (daa_score, _) = self
             .consensus
             .difficulty_manager
-            .calc_daa_score_and_added_blocks(&mut window_hashes, &ghostdag_data);
-
-        header.bits = self
-            .consensus
-            .difficulty_manager
-            .calculate_difficulty_bits(&window);
-
+            .calc_daa_score_and_added_blocks(&mut window.iter().map(|item| item.0.hash), &ghostdag_data);
+        header.bits = self.consensus.difficulty_manager.calculate_difficulty_bits(&window);
         header.daa_score = daa_score;
-
-        header.timestamp = self
-            .consensus
-            .past_median_time_manager
-            .calc_past_median_time(ghostdag_data.clone())
-            .0
-            + 1;
+        header.timestamp = self.consensus.past_median_time_manager.calc_past_median_time(ghostdag_data.clone()).0 + 1;
         header.blue_score = ghostdag_data.blue_score;
         header.blue_work = ghostdag_data.blue_work;
 
         header
     }
 
-    pub fn add_block_with_parents(
-        &self, hash: Hash, parents: Vec<Hash>,
-    ) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
-        self.validate_and_insert_block(Arc::new(self.build_block_with_parents(hash, parents)))
+    pub fn add_block_with_parents(&self, hash: Hash, parents: Vec<Hash>) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
+        self.validate_and_insert_block(self.build_block_with_parents(hash, parents).to_immutable())
     }
 
     pub fn build_block_with_parents_and_transactions(
-        &self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>,
-    ) -> Block {
+        &self,
+        hash: Hash,
+        parents: Vec<Hash>,
+        mut txs: Vec<Transaction>,
+    ) -> MutableBlock {
         let mut header = self.build_header_with_parents(hash, parents);
-        if !txs.is_empty() {
-            header.hash_merkle_root = calc_hash_merkle_root(txs.iter());
-        }
-        Block { header, transactions: txs }
+        let cb_payload: Vec<u8> = header.blue_score.to_le_bytes().iter().copied() // Blue score
+            .chain(self.consensus.coinbase_manager.calc_block_subsidy(header.daa_score).to_le_bytes().iter().copied()) // Subsidy
+            .chain((0_u16).to_le_bytes().iter().copied()) // Script public key version
+            .chain((0_u8).to_le_bytes().iter().copied()) // Script public key length
+            .collect();
+
+        let cb = Transaction::new(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, cb_payload);
+        txs.insert(0, cb);
+        header.hash_merkle_root = calc_hash_merkle_root(txs.iter());
+        MutableBlock::new(header, txs)
     }
 
-    pub fn build_block_with_parents(&self, hash: Hash, parents: Vec<Hash>) -> Block {
-        Block::from_header(self.build_header_with_parents(hash, parents))
+    pub fn build_block_with_parents(&self, hash: Hash, parents: Vec<Hash>) -> MutableBlock {
+        MutableBlock::from_header(self.build_header_with_parents(hash, parents))
     }
 
-    pub fn validate_and_insert_block(
-        &self, block: Arc<Block>,
-    ) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
+    pub fn validate_and_insert_block(&self, block: Block) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
         self.consensus.validate_and_insert_block(block)
     }
 
@@ -134,14 +126,40 @@ impl TestConsensus {
         &self.consensus.reachability_store
     }
 
+    pub fn headers_store(&self) -> Arc<impl HeaderStoreReader> {
+        self.consensus.headers_store.clone()
+    }
+
     pub fn processing_counters(&self) -> &Arc<ProcessingCounters> {
         &self.consensus.counters
+    }
+
+    pub fn block_body_processor(&self) -> &Arc<BlockBodyProcessor> {
+        &self.consensus.body_processor
+    }
+
+    pub fn past_median_time_manager(&self) -> &PastMedianTimeManager<DbHeadersStore, DbGhostdagStore, BlockWindowCacheStore> {
+        &self.consensus.past_median_time_manager
+    }
+
+    // TODO: add to consensus API
+    pub fn body_tips(&self) -> Arc<BlockHashSet> {
+        self.consensus.body_tips_store.read().get().unwrap()
+    }
+
+    // TODO: add to consensus API
+    pub fn block_status(&self, hash: Hash) -> BlockStatus {
+        self.consensus.statuses_store.read().get(hash).unwrap()
+    }
+
+    pub fn ghostdag_manager(&self) -> &DbGhostdagManager {
+        &self.consensus.ghostdag_manager
     }
 }
 
 impl Service for TestConsensus {
-    fn ident(self: Arc<TestConsensus>) -> String {
-        "test-consensus".to_owned()
+    fn ident(self: Arc<TestConsensus>) -> &'static str {
+        "test-consensus"
     }
 
     fn start(self: Arc<TestConsensus>, core: Arc<Core>) -> Vec<JoinHandle<()>> {
@@ -175,11 +193,7 @@ impl Drop for TempDbLifetime {
                 break;
             }
         }
-        assert_eq!(
-            self.weak_db_ref.strong_count(),
-            0,
-            "DB is expected to have no strong references when lifetime is dropped"
-        );
+        assert_eq!(self.weak_db_ref.strong_count(), 0, "DB is expected to have no strong references when lifetime is dropped");
         if let Some(dir) = self.tempdir.take() {
             let options = rocksdb::Options::default();
             let path_buf = dir.path().to_owned();

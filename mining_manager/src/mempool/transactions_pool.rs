@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) struct TransactionsPool<'a> {
-    all_transactions: HashMap<TransactionId, MempoolTransaction<'a>>,
-    high_priority_transactions: HashMap<TransactionId, MempoolTransaction<'a>>,
-    chained_transactions_by_parent_id: HashMap<TransactionId, Vec<MempoolTransaction<'a>>>,
+    all_transactions: HashMap<TransactionId, MempoolTransaction>,
+    high_priority_transactions: HashMap<TransactionId, MempoolTransaction>,
+    chained_transactions_by_parent_id: HashMap<TransactionId, Vec<MempoolTransaction>>,
     transactions_ordered_by_fee: TransactionsOrderedByFee<'a>,
 }
 

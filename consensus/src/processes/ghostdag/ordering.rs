@@ -1,7 +1,8 @@
-use std::{cmp::Ordering, collections::HashSet};
+use std::cmp::Ordering;
 
-use consensus_core::BlueWorkType;
+use consensus_core::{BlockHashSet, BlueWorkType};
 use hashes::Hash;
+use serde::{Deserialize, Serialize};
 
 use crate::model::{
     services::reachability::ReachabilityService,
@@ -10,7 +11,7 @@ use crate::model::{
 
 use super::protocol::GhostdagManager;
 
-#[derive(Eq, Clone)]
+#[derive(Eq, Clone, Serialize, Deserialize)]
 pub struct SortableBlock {
     pub hash: Hash,
     pub blue_work: BlueWorkType,
@@ -36,23 +37,15 @@ impl PartialOrd for SortableBlock {
 
 impl Ord for SortableBlock {
     fn cmp(&self, other: &Self) -> Ordering {
-        let res = self.blue_work.cmp(&other.blue_work);
-        match res {
-            Ordering::Equal => self.hash.cmp(&other.hash),
-            _ => res,
-        }
+        self.blue_work.cmp(&other.blue_work).then_with(|| self.hash.cmp(&other.hash))
     }
 }
 
-impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService, V: HeaderStoreReader>
-    GhostdagManager<T, S, U, V>
-{
-    pub fn sort_blocks(&self, blocks: HashSet<Hash>) -> Vec<Hash> {
-        let mut sorted_blocks: Vec<Hash> = Vec::from_iter(blocks.iter().cloned());
-        sorted_blocks.sort_by_cached_key(|block| SortableBlock {
-            hash: *block,
-            blue_work: self.ghostdag_store.get_blue_work(*block).unwrap(),
-        });
+impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService, V: HeaderStoreReader> GhostdagManager<T, S, U, V> {
+    pub fn sort_blocks(&self, blocks: BlockHashSet) -> Vec<Hash> {
+        let mut sorted_blocks: Vec<Hash> = blocks.into_iter().collect();
+        sorted_blocks
+            .sort_by_cached_key(|block| SortableBlock { hash: *block, blue_work: self.ghostdag_store.get_blue_work(*block).unwrap() });
         sorted_blocks
     }
 }

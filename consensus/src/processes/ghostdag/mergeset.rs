@@ -2,20 +2,15 @@ use super::protocol::GhostdagManager;
 use crate::model::stores::ghostdag::GhostdagStoreReader;
 use crate::model::stores::relations::RelationsStoreReader;
 use crate::model::{services::reachability::ReachabilityService, stores::headers::HeaderStoreReader};
+use consensus_core::BlockHashSet;
 use hashes::Hash;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
-impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService, V: HeaderStoreReader>
-    GhostdagManager<T, S, U, V>
-{
+impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService, V: HeaderStoreReader> GhostdagManager<T, S, U, V> {
     pub fn ordered_mergeset_without_selected_parent(&self, selected_parent: Hash, parents: &[Hash]) -> Vec<Hash> {
-        let mut queue: VecDeque<Hash> = parents
-            .iter()
-            .cloned()
-            .filter(|p| *p != selected_parent)
-            .collect();
-        let mut mergeset = HashSet::<Hash>::from_iter(queue.iter().cloned());
-        let mut selected_parent_past: HashSet<Hash> = HashSet::new();
+        let mut queue: VecDeque<_> = parents.iter().copied().filter(|p| p != &selected_parent).collect();
+        let mut mergeset: BlockHashSet = queue.iter().copied().collect();
+        let mut selected_parent_past = BlockHashSet::new();
 
         while let Some(current) = queue.pop_front() {
             let current_parents = self.relations_store.get_parents(current).unwrap();
@@ -31,10 +26,7 @@ impl<T: GhostdagStoreReader, S: RelationsStoreReader, U: ReachabilityService, V:
                     continue;
                 }
 
-                if self
-                    .reachability_service
-                    .is_dag_ancestor_of(*parent, selected_parent)
-                {
+                if self.reachability_service.is_dag_ancestor_of(*parent, selected_parent) {
                     selected_parent_past.insert(*parent);
                     continue;
                 }

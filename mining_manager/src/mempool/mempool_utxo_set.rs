@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 pub(crate) struct MempoolUTXOSet<'a> {
     pool_unspent_outputs: HashMap<TransactionOutpoint, UtxoEntry>,
-    transactions_by_previous_outpoint: HashMap<TransactionOutpoint, MempoolTransaction<'a>>,
+    transactions_by_previous_outpoint: HashMap<TransactionOutpoint, MempoolTransaction>,
 }
 
 impl<'a> MempoolUTXOSet<'a> {

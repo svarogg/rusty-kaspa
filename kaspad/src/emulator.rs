@@ -1,8 +1,7 @@
 use consensus::{
-    consensus::test_consensus::TestConsensus, errors::RuleError, model::stores::statuses::BlockStatus,
-    pipeline::ProcessingCounters,
+    consensus::test_consensus::TestConsensus, errors::RuleError, model::stores::statuses::BlockStatus, pipeline::ProcessingCounters,
 };
-use futures::future::join_all;
+use futures_util::future::join_all;
 use hashes::Hash;
 use kaspa_core::{core::Core, service::Service, signals::Shutdown, trace};
 use num_format::{Locale, ToFormattedString};
@@ -34,19 +33,15 @@ pub struct RandomBlockEmitter {
 
 impl RandomBlockEmitter {
     pub fn new(
-        consensus: Arc<TestConsensus>, genesis: Hash, max_block_parents: u64, bps: f64, delay: f64, target_blocks: u64,
+        consensus: Arc<TestConsensus>,
+        genesis: Hash,
+        max_block_parents: u64,
+        bps: f64,
+        delay: f64,
+        target_blocks: u64,
     ) -> Self {
         let counters = consensus.processing_counters().clone();
-        Self {
-            terminate: AtomicBool::new(false),
-            consensus,
-            genesis,
-            max_block_parents,
-            bps,
-            delay,
-            target_blocks,
-            counters,
-        }
+        Self { terminate: AtomicBool::new(false), consensus, genesis, max_block_parents, bps, delay, target_blocks, counters }
     }
 
     #[tokio::main]
@@ -72,30 +67,20 @@ impl RandomBlockEmitter {
             let mut new_tips = Vec::with_capacity(v as usize);
             let mut futures = Vec::new();
 
-            self.counters
-                .blocks_submitted
-                .fetch_add(v, Ordering::SeqCst);
+            self.counters.blocks_submitted.fetch_add(v, Ordering::SeqCst);
 
             for i in 0..v {
                 // Create a new block referencing all tips from the previous round
-                let mut b = self
-                    .consensus
-                    .build_block_with_parents(Default::default(), tips.clone());
+                let mut b = self.consensus.build_block_with_parents(Default::default(), tips.clone());
                 b.header.timestamp = timestamp;
                 b.header.nonce = i;
                 b.header.finalize();
                 new_tips.push(b.header.hash);
                 // Submit to consensus
-                let f = self
-                    .consensus
-                    .validate_and_insert_block(Arc::new(b));
+                let f = self.consensus.validate_and_insert_block(b.to_immutable());
                 futures.push(f);
             }
-            join_all(futures)
-                .await
-                .into_iter()
-                .collect::<Result<Vec<BlockStatus>, RuleError>>()
-                .unwrap();
+            join_all(futures).await.into_iter().collect::<Result<Vec<BlockStatus>, RuleError>>().unwrap();
 
             tips = new_tips;
             total += v;
@@ -105,8 +90,8 @@ impl RandomBlockEmitter {
 }
 
 impl Service for RandomBlockEmitter {
-    fn ident(self: Arc<RandomBlockEmitter>) -> String {
-        "block-emitter".into()
+    fn ident(self: Arc<RandomBlockEmitter>) -> &'static str {
+        "block-emitter"
     }
 
     fn start(self: Arc<RandomBlockEmitter>, core: Arc<Core>) -> Vec<JoinHandle<()>> {
@@ -154,12 +139,8 @@ impl ConsensusMonitor {
 
             trace!(
                 "sent: {}, processed: {}, pending: {}, -> send rate b/s: {}, process rate b/s: {}, deps rate e/s: {}",
-                snapshot
-                    .blocks_submitted
-                    .to_formatted_string(&Locale::en),
-                snapshot
-                    .header_counts
-                    .to_formatted_string(&Locale::en),
+                snapshot.blocks_submitted.to_formatted_string(&Locale::en),
+                snapshot.header_counts.to_formatted_string(&Locale::en),
                 pending.to_formatted_string(&Locale::en),
                 send_rate.to_formatted_string(&Locale::en),
                 header_rate.to_formatted_string(&Locale::en),
@@ -175,8 +156,8 @@ impl ConsensusMonitor {
 
 // service trait implementation for Monitor
 impl Service for ConsensusMonitor {
-    fn ident(self: Arc<ConsensusMonitor>) -> String {
-        "consensus-monitor".into()
+    fn ident(self: Arc<ConsensusMonitor>) -> &'static str {
+        "consensus-monitor"
     }
 
     fn start(self: Arc<ConsensusMonitor>, _core: Arc<Core>) -> Vec<JoinHandle<()>> {
